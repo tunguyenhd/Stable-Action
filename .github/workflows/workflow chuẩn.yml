@@ -1,0 +1,69 @@
+# Builds Stable Action for iOS 16.4 and uploads an unsigned .ipa artifact.
+# The IPA must be re-signed (Xcode, AltStore, etc.) before installing on a device.
+#
+# To produce a SIGNED .ipa, add repository secrets:
+#   CERTIFICATE_P12_BASE64   – base64-encoded .p12 distribution certificate
+#   CERTIFICATE_PASSWORD     – password for the .p12
+#   PROVISIONING_PROFILE_B64 – base64-encoded .mobileprovision
+# Then replace the Build step's CODE_SIGNING_* overrides with proper identity values.
+
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    name: Build Stable Action (.ipa · iOS 16.4)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          # Pick the newest Xcode installed on the runner
+          XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$XCODE" ] && XCODE=/Applications/Xcode.app
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          echo "Xcode: $(xcodebuild -version | head -1)"
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+      - name: Build for iOS (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project "Stable Action.xcodeproj" \
+            -scheme "Stable Action" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            IPHONEOS_DEPLOYMENT_TARGET=16.4 \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO
+      - name: Package .ipa
+        run: |
+          APP=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" \
+                     -name "*.app" -type d -maxdepth 1 | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::Stable Action.app not found in build products"
+            exit 1
+          fi
+          echo "Packaging: $APP"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          zip -qr StableAction.ipa Payload
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StableAction-iOS16.4
+          path: ${{ runner.temp }}/StableAction.ipa
+          if-no-files-found: error
